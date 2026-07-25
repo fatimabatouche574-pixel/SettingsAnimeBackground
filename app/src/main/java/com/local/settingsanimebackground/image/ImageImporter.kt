@@ -35,9 +35,11 @@ class ImageImporter(private val context: Context) {
         } ?: throw IllegalArgumentException("无法打开所选图片")
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+        val boundsDescriptor = resolver.openFileDescriptor(uri, "r")
+            ?: throw IllegalArgumentException("无法读取所选图片")
+        boundsDescriptor.use { descriptor ->
             BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, bounds)
-        } ?: throw IllegalArgumentException("无法读取所选图片")
+        }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
             throw IllegalArgumentException("图片格式无效或已损坏")
         }
