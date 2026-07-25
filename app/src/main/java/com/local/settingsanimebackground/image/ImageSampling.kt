@@ -7,7 +7,7 @@ object ImageSampling {
         if (width <= 0 || height <= 0 || maxLongEdge <= 0) return 1
         var sample = 1
         val longEdge = maxOf(width, height)
-        while (longEdge / (sample * 2) >= maxLongEdge) {
+        while (longEdge / sample > maxLongEdge && sample <= Int.MAX_VALUE / 2) {
             sample *= 2
         }
         return sample

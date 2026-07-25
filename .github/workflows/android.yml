@@ -43,6 +43,14 @@ jobs:
       - name: 运行单元测试并构建 APK
         run: ./gradlew testDebugUnitTest assembleDebug --stacktrace
 
+      - name: 在 API 35 模拟器运行图片导入测试
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          script: ./gradlew connectedDebugAndroidTest --stacktrace
+
       - name: 上传 Debug APK
         uses: actions/upload-artifact@v7
         with:

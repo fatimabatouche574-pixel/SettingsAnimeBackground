@@ -1,6 +1,7 @@
 package com.local.settingsanimebackground.image
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ImageSamplingTest {
@@ -12,7 +13,7 @@ class ImageSamplingTest {
 
     @Test
     fun largeImageUsesPowerOfTwoDecodeSampling() {
-        assertEquals(2, ImageSampling.calculateInSampleSize(8000, 6000))
+        assertEquals(4, ImageSampling.calculateInSampleSize(8000, 6000))
     }
 
     @Test
@@ -24,5 +25,12 @@ class ImageSamplingTest {
     @Test
     fun invalidBoundsFallBackToSafeSampling() {
         assertEquals(1, ImageSampling.calculateInSampleSize(0, 100))
+    }
+
+    @Test
+    fun decodedLongEdgeDoesNotExceedLimit() {
+        val sample = ImageSampling.calculateInSampleSize(100_000, 80_000)
+        assertEquals(64, sample)
+        assertTrue(100_000 / sample <= ImageSampling.MAX_LONG_EDGE)
     }
 }
