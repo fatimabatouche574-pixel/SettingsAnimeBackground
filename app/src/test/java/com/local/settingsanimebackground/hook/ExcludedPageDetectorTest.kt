@@ -28,7 +28,7 @@ class ExcludedPageDetectorTest {
     fun ordinarySettingsPageIsAllowed() {
         assertFalse(
             ExcludedPageDetector.containsSensitiveToken(
-                "com.android.settings.Settings$WifiSettingsActivity",
+                "com.android.settings.Settings\$WifiSettingsActivity",
             ),
         )
     }
