@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">设置萌化背景</string>
+    <string name="xposed_description">为 ColorOS 15 系统设置添加自定义背景</string>
+</resources>

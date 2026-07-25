@@ -1,0 +1,12 @@
+<resources>
+    <string-array name="scale_modes">
+        <item>居中裁剪</item>
+        <item>完整显示</item>
+        <item>拉伸</item>
+    </string-array>
+    <string-array name="status_icon_modes">
+        <item>自动</item>
+        <item>浅色图标</item>
+        <item>深色图标</item>
+    </string-array>
+</resources>
