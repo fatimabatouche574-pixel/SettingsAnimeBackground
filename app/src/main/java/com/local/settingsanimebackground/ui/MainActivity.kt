@@ -18,6 +18,7 @@ import com.local.settingsanimebackground.config.ConfigRepository
 import com.local.settingsanimebackground.config.ModuleConfig
 import com.local.settingsanimebackground.databinding.ActivityMainBinding
 import com.local.settingsanimebackground.image.ImageImporter
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -258,7 +259,7 @@ class MainActivity : AppCompatActivity() {
                     "am force-stop --user current com.android.settings",
                 )
                     .redirectErrorStream(true)
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectOutput(File("/dev/null"))
                     .start()
                 val finished = process.waitFor(ROOT_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 if (!finished) process.destroyForcibly()
