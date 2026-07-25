@@ -1,6 +1,8 @@
 package com.local.settingsanimebackground.hook
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RenderEffect
@@ -19,8 +21,12 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import com.local.settingsanimebackground.config.ModuleConfig
 import java.lang.ref.WeakReference
+import java.lang.reflect.Field
+import java.util.IdentityHashMap
+import java.util.LinkedHashSet
 import java.util.WeakHashMap
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class BackgroundController private constructor(
     private val layer: BackgroundLayer,
@@ -31,12 +37,15 @@ class BackgroundController private constructor(
     private val systemBarManager = SystemBarManager(activity.window)
     private var appliedConfigVersion = Long.MIN_VALUE
     private var expectedBackgroundVersion = Long.MIN_VALUE
+    private var expectedConfigVersion = Long.MIN_VALUE
     private var blurRadiusPx = Float.NaN
     private var hasUsableBitmap = false
+    private var currentConfig: ModuleConfig? = null
 
     fun apply(snapshot: RemoteSnapshot) {
         val activity = activityRef.get() ?: return
         val config = snapshot.config
+        currentConfig = config
         HookLogger.diagnosticEnabled = config.diagnosticLogging
 
         if (!config.enabled || !snapshot.hasBackground || ExcludedPageDetector.isExcluded(activity)) {
@@ -49,6 +58,7 @@ class BackgroundController private constructor(
             appliedConfigVersion = config.configVersion
         }
         expectedBackgroundVersion = config.backgroundVersion
+        expectedConfigVersion = config.configVersion
         applyLayerVisuals(config)
         systemBarManager.apply(config)
 
@@ -57,14 +67,16 @@ class BackgroundController private constructor(
             val currentActivity = weakActivity.get() ?: return@load
             if (currentActivity.isDestroyed || !layer.isAttachedToWindow) return@load
             if (expectedBackgroundVersion != config.backgroundVersion) return@load
+            if (expectedConfigVersion != config.configVersion) return@load
             if (bitmap == null) {
                 hasUsableBitmap = false
                 RemoteConfigClient.reportFault(currentActivity, "背景图片解码失败")
+                remove(currentActivity)
                 return@load
             }
             setBitmap(bitmap)
             transparencyManager.apply(
-                currentActivity.window.decorView,
+                currentActivity,
                 layer,
                 config.clearOpaqueBackgrounds,
                 config.cardTransparencyEnabled,
@@ -74,7 +86,7 @@ class BackgroundController private constructor(
 
         if (hasUsableBitmap) {
             transparencyManager.apply(
-                activity.window.decorView,
+                activity,
                 layer,
                 config.clearOpaqueBackgrounds,
                 config.cardTransparencyEnabled,
@@ -89,6 +101,20 @@ class BackgroundController private constructor(
         clearBlur()
         layer.imageView.setImageDrawable(null)
         hasUsableBitmap = false
+        currentConfig = null
+    }
+
+    private fun applyCouiCard(view: View) {
+        val activity = activityRef.get() ?: return
+        val config = currentConfig ?: return
+        if (!config.cardTransparencyEnabled ||
+            !config.enabled ||
+            !hasUsableBitmap ||
+            ExcludedPageDetector.isExcluded(activity)
+        ) {
+            return
+        }
+        transparencyManager.applyCouiCard(view, config.cardAlpha)
     }
 
     private fun setBitmap(bitmap: Bitmap) {
@@ -166,6 +192,16 @@ class BackgroundController private constructor(
             (layer.parent as? ViewGroup)?.removeView(layer)
         }
 
+        fun onCouiCardReady(view: View) {
+            val activity = findActivity(view.context) ?: return
+            val layer = activity.window.decorView
+                .findViewWithTag<View>(BackgroundLayer.LAYER_TAG) as? BackgroundLayer
+                ?: return
+            if (isControllerInitialized(layer)) {
+                layer.controller.applyCouiCard(view)
+            }
+        }
+
         private fun createLayer(activity: Activity): BackgroundLayer? {
             val layer = BackgroundLayer(activity)
             val params = ViewGroup.LayoutParams(
@@ -210,6 +246,24 @@ class BackgroundController private constructor(
                 false
             }
         }
+
+        private fun findActivity(context: Context?): Activity? {
+            var candidate = context
+            repeat(MAX_CONTEXT_UNWRAP_DEPTH) {
+                when (candidate) {
+                    is Activity -> return candidate as Activity
+                    is ContextWrapper -> {
+                        val base = (candidate as ContextWrapper).baseContext
+                        if (base === candidate) return null
+                        candidate = base
+                    }
+                    else -> return null
+                }
+            }
+            return null
+        }
+
+        private const val MAX_CONTEXT_UNWRAP_DEPTH = 8
     }
 }
 
@@ -217,30 +271,59 @@ private class TransparencyManager {
     private data class OriginalState(
         val background: Drawable?,
         val alpha: Float,
+        val appliedBackground: Drawable? = null,
+        val couiCardColor: Int? = null,
+        val appliedCouiCardColor: Int? = null,
     )
 
     private val originals = WeakHashMap<View, OriginalState>()
 
     fun apply(
-        root: View,
+        activity: Activity,
         backgroundLayer: BackgroundLayer,
         clearOpaque: Boolean,
         cardsEnabled: Boolean,
         cardAlpha: Float,
     ) {
-        visit(root, backgroundLayer, 0, clearOpaque, cardsEnabled, cardAlpha)
+        val roots = contentRoots(activity, backgroundLayer)
+        val visitedDepths = IdentityHashMap<View, Int>()
+        roots.forEach { root ->
+            visit(
+                root,
+                backgroundLayer,
+                0,
+                clearOpaque,
+                cardsEnabled,
+                cardAlpha,
+                visitedDepths,
+            )
+        }
     }
 
     fun restoreAll() {
         originals.entries.toList().forEach { (view, state) ->
             try {
-                view.background = state.background
-                view.alpha = state.alpha
+                if (state.couiCardColor != null && state.appliedCouiCardColor != null) {
+                    val field = findCouiCardColorField(view)
+                    if (field != null && field.getInt(view) == state.appliedCouiCardColor) {
+                        field.setInt(view, state.couiCardColor)
+                        view.invalidate()
+                    }
+                } else if (view.background === state.appliedBackground) {
+                    view.background = state.background
+                }
+                if (abs(view.alpha - state.alpha) < ALPHA_EPSILON) {
+                    view.alpha = state.alpha
+                }
             } catch (_: Throwable) {
                 // 已销毁或被系统替换的 View 直接跳过。
             }
         }
         originals.clear()
+    }
+
+    fun applyCouiCard(view: View, alpha: Float) {
+        applyCouiCardColor(view, alpha.coerceIn(0.1f, 1f))
     }
 
     private fun visit(
@@ -250,8 +333,12 @@ private class TransparencyManager {
         clearOpaque: Boolean,
         cardsEnabled: Boolean,
         cardAlpha: Float,
+        visitedDepths: IdentityHashMap<View, Int>,
     ) {
         if (view === backgroundLayer || depth > MAX_DEPTH) return
+        val previousDepth = visitedDepths[view]
+        if (previousDepth != null && previousDepth <= depth) return
+        visitedDepths[view] = depth
         val isCard = isCardView(view)
         if (isCard && cardsEnabled) {
             makeCardTransparent(view, cardAlpha)
@@ -268,22 +355,36 @@ private class TransparencyManager {
                     clearOpaque,
                     cardsEnabled,
                     cardAlpha,
+                    visitedDepths,
                 )
             }
         }
     }
 
     private fun clearSimpleOpaqueContainer(view: View) {
-        if (!isCandidateContainer(view) || isInteractive(view) || originals.containsKey(view)) return
+        if (!isCandidateContainer(view) || isInteractive(view)) return
+        originals[view]?.let { state ->
+            if (view.background === state.appliedBackground) return
+            originals.remove(view)
+        }
         val background = view.background as? ColorDrawable ?: return
         if (background.alpha != 255 || Color.alpha(background.color) != 255) return
-        originals[view] = OriginalState(view.background, view.alpha)
-        view.background = ColorDrawable(Color.TRANSPARENT)
+        val replacement = ColorDrawable(Color.TRANSPARENT)
+        originals[view] = OriginalState(
+            background = view.background,
+            alpha = view.alpha,
+            appliedBackground = replacement,
+        )
+        view.background = replacement
         HookLogger.diagnostic("透明化纯色容器：${view.javaClass.name}")
     }
 
     private fun makeCardTransparent(view: View, alpha: Float) {
-        if (originals.containsKey(view)) return
+        if (applyCouiCardColor(view, alpha.coerceIn(0.1f, 1f))) return
+        originals[view]?.let { state ->
+            if (view.background === state.appliedBackground) return
+            originals.remove(view)
+        }
         val background = view.background ?: return
         if (!isSupportedCardDrawable(background)) {
             HookLogger.diagnostic(
@@ -299,10 +400,87 @@ private class TransparencyManager {
             HookLogger.diagnostic("卡片 Drawable 无法安全复制，已跳过：${view.javaClass.name}")
             return
         }
-        originals[view] = OriginalState(background, view.alpha)
+        originals[view] = OriginalState(
+            background = background,
+            alpha = view.alpha,
+            appliedBackground = clone,
+        )
         clone.alpha = (alpha.coerceIn(0.1f, 1f) * 255f).toInt()
         view.background = clone
         HookLogger.diagnostic("调整卡片透明度：${view.javaClass.name}")
+    }
+
+    private fun applyCouiCardColor(view: View, alpha: Float): Boolean {
+        val field = findCouiCardColorField(view) ?: return false
+        return try {
+            val existing = originals[view]
+            if (existing?.couiCardColor != null && existing.appliedCouiCardColor != null) {
+                val current = field.getInt(view)
+                if (current == existing.appliedCouiCardColor) return true
+                originals.remove(view)
+            }
+            val originalColor = field.getInt(view)
+            val appliedAlpha = (Color.alpha(originalColor) * alpha)
+                .roundToInt()
+                .coerceIn(0, 255)
+            val appliedColor = Color.argb(
+                appliedAlpha,
+                Color.red(originalColor),
+                Color.green(originalColor),
+                Color.blue(originalColor),
+            )
+            originals[view] = OriginalState(
+                background = view.background,
+                alpha = view.alpha,
+                couiCardColor = originalColor,
+                appliedCouiCardColor = appliedColor,
+            )
+            field.setInt(view, appliedColor)
+            view.invalidate()
+            HookLogger.diagnostic("调整 COUI 卡片绘制颜色：${view.javaClass.name}")
+            true
+        } catch (error: Throwable) {
+            HookLogger.diagnostic("COUI 卡片颜色调整失败：${error.javaClass.simpleName}")
+            false
+        }
+    }
+
+    private fun findCouiCardColorField(view: View): Field? {
+        var type: Class<*>? = view.javaClass
+        repeat(MAX_CLASS_HIERARCHY_DEPTH) {
+            val current = type ?: return null
+            try {
+                return current.getDeclaredField(COUI_CARD_COLOR_FIELD).apply {
+                    isAccessible = true
+                }
+            } catch (_: NoSuchFieldException) {
+                type = current.superclass
+            } catch (_: Throwable) {
+                return null
+            }
+        }
+        return null
+    }
+
+    private fun contentRoots(
+        activity: Activity,
+        backgroundLayer: BackgroundLayer,
+    ): LinkedHashSet<View> {
+        val roots = LinkedHashSet<View>()
+        SETTINGS_ROOT_IDS.forEach { entryName ->
+            val id = try {
+                activity.resources.getIdentifier(entryName, "id", SETTINGS_PACKAGE)
+            } catch (_: Throwable) {
+                0
+            }
+            if (id != 0) {
+                activity.findViewById<View>(id)?.let { if (it !== backgroundLayer) roots += it }
+            }
+        }
+        activity.findViewById<View>(android.R.id.content)
+            ?.let { if (it !== backgroundLayer) roots += it }
+        if (roots.isEmpty()) roots += activity.window.decorView
+        return roots
     }
 
     private fun isCandidateContainer(view: View): Boolean {
@@ -319,12 +497,13 @@ private class TransparencyManager {
     }
 
     private fun isCardView(view: View): Boolean {
-        val name = view.javaClass.name.lowercase()
-        return name.contains("cardview") ||
-            name.contains("materialcard") ||
-            name.contains("opluscard") ||
-            name.contains("couicard") ||
-            name.contains("preferencecard")
+        var type: Class<*>? = view.javaClass
+        repeat(MAX_CLASS_HIERARCHY_DEPTH) {
+            val name = type?.name?.lowercase() ?: return false
+            if (CARD_NAMES.any(name::contains)) return true
+            type = type?.superclass
+        }
+        return false
     }
 
     private fun isSupportedCardDrawable(drawable: Drawable): Boolean =
@@ -336,6 +515,25 @@ private class TransparencyManager {
 
     companion object {
         private const val MAX_DEPTH = 4
+        private const val MAX_CLASS_HIERARCHY_DEPTH = 8
+        private const val ALPHA_EPSILON = 0.001f
+        private const val SETTINGS_PACKAGE = "com.android.settings"
+        private const val COUI_CARD_COLOR_FIELD = "mCardBackgroundColor"
+        private val SETTINGS_ROOT_IDS = listOf(
+            "recycler_view",
+            "list_container",
+            "content_frame",
+            "content_parent",
+            "settings_homepage_container",
+        )
+        private val CARD_NAMES = listOf(
+            "cardview",
+            "materialcard",
+            "opluscard",
+            "couicard",
+            "preferencecard",
+            "withcard",
+        )
         private val CANDIDATE_NAMES = listOf(
             "framelayout",
             "linearlayout",
@@ -365,8 +563,10 @@ private class SystemBarManager(private val window: Window) {
     private var applied = false
     private var originalStatusBarColor = Color.TRANSPARENT
     private var originalNavigationBarColor = Color.TRANSPARENT
+    private var originalNavigationBarDividerColor = Color.TRANSPARENT
+    private var originalNavigationBarContrastEnforced = true
+    private var originalStatusBarContrastEnforced = true
     private var originalAppearance = 0
-    private var originalSystemUiVisibility = 0
 
     fun apply(config: ModuleConfig) {
         if (!config.extendIntoSystemBars) {
@@ -377,12 +577,17 @@ private class SystemBarManager(private val window: Window) {
             if (!applied) {
                 originalStatusBarColor = window.statusBarColor
                 originalNavigationBarColor = window.navigationBarColor
-                originalSystemUiVisibility = window.decorView.systemUiVisibility
+                originalNavigationBarDividerColor = window.navigationBarDividerColor
+                originalNavigationBarContrastEnforced = window.isNavigationBarContrastEnforced
+                originalStatusBarContrastEnforced = window.isStatusBarContrastEnforced
                 originalAppearance = window.insetsController?.systemBarsAppearance ?: 0
                 applied = true
             }
             window.statusBarColor = Color.TRANSPARENT
             window.navigationBarColor = Color.TRANSPARENT
+            window.navigationBarDividerColor = Color.TRANSPARENT
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
 
             val darkIcons = when (config.statusBarIconMode) {
                 ModuleConfig.ICON_LIGHT -> false
@@ -408,7 +613,9 @@ private class SystemBarManager(private val window: Window) {
         try {
             window.statusBarColor = originalStatusBarColor
             window.navigationBarColor = originalNavigationBarColor
-            window.decorView.systemUiVisibility = originalSystemUiVisibility
+            window.navigationBarDividerColor = originalNavigationBarDividerColor
+            window.isNavigationBarContrastEnforced = originalNavigationBarContrastEnforced
+            window.isStatusBarContrastEnforced = originalStatusBarContrastEnforced
             window.insetsController?.setSystemBarsAppearance(
                 originalAppearance,
                 WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,

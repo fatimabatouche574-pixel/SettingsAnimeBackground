@@ -71,11 +71,17 @@ class ConfigProvider : ContentProvider() {
         sortOrder: String?,
     ): Cursor {
         enforceAllowedUid()
+        validateKnownUri(uri)
+        require(projection == null) { "Provider query 不接受 projection" }
+        require(selection == null) { "Provider query 不接受 selection" }
+        require(selectionArgs == null) { "Provider query 不接受 selectionArgs" }
+        require(sortOrder == null) { "Provider query 不接受 sortOrder" }
         throw UnsupportedOperationException("请使用 ContentProvider.call 读取配置")
     }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri {
         enforceAllowedUid()
+        validateKnownUri(uri)
         throw SecurityException("禁止通过 Provider 写入")
     }
 
@@ -86,19 +92,32 @@ class ConfigProvider : ContentProvider() {
         selectionArgs: Array<out String>?,
     ): Int {
         enforceAllowedUid()
+        validateKnownUri(uri)
         throw SecurityException("禁止通过 Provider 写入")
     }
 
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int {
         enforceAllowedUid()
+        validateKnownUri(uri)
         throw SecurityException("禁止通过 Provider 删除")
     }
 
     private fun validateBackgroundUri(uri: Uri) {
+        validateBaseUri(uri)
+        require(uri.pathSegments == BACKGROUND_PATH) { "背景 URI 路径非法" }
+    }
+
+    private fun validateKnownUri(uri: Uri) {
+        validateBaseUri(uri)
+        require(uri.pathSegments == BACKGROUND_PATH || uri.pathSegments == CONFIG_PATH) {
+            "Provider URI 路径非法"
+        }
+    }
+
+    private fun validateBaseUri(uri: Uri) {
         require(uri.scheme == "content") { "URI scheme 非法" }
         require(uri.authority == ConfigContract.AUTHORITY) { "URI authority 非法" }
-        require(uri.pathSegments == listOf("background")) { "背景 URI 路径非法" }
-        require(uri.query == null && uri.fragment == null) { "背景 URI 不接受附加参数" }
+        require(uri.query == null && uri.fragment == null) { "Provider URI 不接受附加参数" }
     }
 
     private fun enforceAllowedUid() {
@@ -121,5 +140,7 @@ class ConfigProvider : ContentProvider() {
 
     companion object {
         private const val SETTINGS_PACKAGE = "com.android.settings"
+        private val BACKGROUND_PATH = listOf("background")
+        private val CONFIG_PATH = listOf("config")
     }
 }

@@ -2,6 +2,10 @@
 
 这是一个面向一加 Ace 系列、ColorOS 15、Android 15（API 35）的 LSPosed 模块。它通过 Hook `com.android.settings` 的 Activity 生命周期，在系统设置普通页面的最底层加入用户选择的背景图片，不修改 Settings.apk，也不写入任何系统分区。
 
+当前设备定向基线为 OnePlus PGKM10、`PGKM10_15.0.0.700(CN01)`、KernelSU
+3.2.5 和 LSPosed v2.0.3。完整逆向证据与 OTA 后复核项见
+[`docs/DEVICE_ANALYSIS.md`](docs/DEVICE_ANALYSIS.md)。
+
 ## 功能
 
 - 自定义 JPEG、PNG 或 WEBP 背景，导入时修正 EXIF 方向并限制最长边为 2160 像素
@@ -56,7 +60,7 @@ app/build/outputs/apk/debug/app-debug.apk
 模块不替换系统 APK、不使用 RRO、不 Hook system_server 或 SystemUI、不修改应用签名，也不包含刷写、重启手机或分区写入代码。“安全重启设置作用域”只在用户确认后以 Root 执行：
 
 ```text
-am force-stop com.android.settings
+am force-stop --user current com.android.settings
 ```
 
 Provider 导出是跨 UID 读取所必需的。每个入口都会检查 Binder 调用 UID，只接受模块自身 UID 或设备上 `com.android.settings` 的系统 UID；图片路径固定为内部目录中的 `background.webp`，外部不能写入、删除或选择任意路径。
@@ -82,3 +86,6 @@ LSPosed 管理器的模块日志中也会出现同一 Tag。设备厂商更改�
 ## 已知限制
 
 本项目优先针对固定的 ColorOS 15 / API 35 环境。ColorOS 小版本如果替换了设置页面结构，保守透明化可能会跳过某些容器；这不会影响原页面点击、滚动和输入。模块停用后应强制停止一次系统设置进程，让未加载模块的新进程恢复完全原生状态。
+
+OTA 后如果 Settings.apk 哈希与设备分析基线不同，应先关闭模块作用域并重新核对页面
+类结构；模块不会尝试自动修改系统 APK、刷写分区或重启手机。

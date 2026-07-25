@@ -19,6 +19,7 @@ import com.local.settingsanimebackground.config.ModuleConfig
 import com.local.settingsanimebackground.databinding.ActivityMainBinding
 import com.local.settingsanimebackground.image.ImageImporter
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : AppCompatActivity() {
@@ -65,8 +66,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         previewGeneration.incrementAndGet()
         worker.shutdownNow()
-        previewBitmap = null
         binding.previewImage.setImageDrawable(null)
+        previewBitmap?.let { if (!it.isRecycled) it.recycle() }
+        previewBitmap = null
         super.onDestroy()
     }
 
@@ -158,8 +160,7 @@ class MainActivity : AppCompatActivity() {
         val file = repository.backgroundFile()
         val generation = previewGeneration.incrementAndGet()
         if (!file.isFile) {
-            previewBitmap = null
-            binding.previewImage.setImageDrawable(null)
+            replacePreviewBitmap(null)
             binding.textNoImage.visibility = View.VISIBLE
             binding.buttonDeleteImage.isEnabled = false
             return
@@ -173,8 +174,7 @@ class MainActivity : AppCompatActivity() {
                     bitmap?.recycle()
                     return@post
                 }
-                previewBitmap = bitmap
-                binding.previewImage.setImageBitmap(bitmap)
+                replacePreviewBitmap(bitmap)
                 binding.textNoImage.visibility = if (bitmap == null) View.VISIBLE else View.GONE
             }
         }
@@ -252,10 +252,17 @@ class MainActivity : AppCompatActivity() {
         setBusy(true, "正在重启系统设置…")
         worker.execute {
             val success = try {
-                ProcessBuilder("su", "-c", "am force-stop com.android.settings")
+                val process = ProcessBuilder(
+                    "su",
+                    "-c",
+                    "am force-stop --user current com.android.settings",
+                )
                     .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .start()
-                    .waitFor() == 0
+                val finished = process.waitFor(ROOT_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                if (!finished) process.destroyForcibly()
+                finished && process.exitValue() == 0
             } catch (_: Exception) {
                 false
             }
@@ -265,6 +272,14 @@ class MainActivity : AppCompatActivity() {
                 if (success) openSystemSettings() else toast("操作失败，请确认已授予 Root 权限")
             }
         }
+    }
+
+    private fun replacePreviewBitmap(bitmap: Bitmap?) {
+        val old = previewBitmap
+        binding.previewImage.setImageDrawable(null)
+        previewBitmap = bitmap
+        if (bitmap != null) binding.previewImage.setImageBitmap(bitmap)
+        if (old !== bitmap && old != null && !old.isRecycled) old.recycle()
     }
 
     private fun openSystemSettings() {
@@ -317,5 +332,9 @@ class MainActivity : AppCompatActivity() {
 
     private abstract class SimpleItemSelectedListener : AdapterView.OnItemSelectedListener {
         override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+    }
+
+    companion object {
+        private const val ROOT_COMMAND_TIMEOUT_SECONDS = 8L
     }
 }
